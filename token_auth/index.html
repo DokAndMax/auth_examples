@@ -11,29 +11,12 @@
     <a href="/logout" id="logout" style="opacity: 0;">Logout</a>
 
     <h1 id="login-header">Login</h1>
-    <h1 id="register-header" style="display: none;">Register</h1>
 
     <div id="login-error-msg-holder">
         <p id="login-error-msg">Invalid username <span id="error-msg-second-line">and/or password</span></p>
     </div>
 
-    <form id="login-form" action="/api/login" method="post">
-        <input type="text" name="login" id="username-field" class="login-form-field" placeholder="Username">
-        <input type="password" name="password" id="password-field" class="login-form-field" placeholder="Password">
-        <input type="submit" value="Login" id="login-form-submit">
-        <div class="space_lg">&nbsp;</div>
-        <div class="space_lg">&nbsp;</div>
-        <button type="button" id="switch-to-register">New User? Register Here</button>
-    </form>
-
-    <form id="register-form" action="/api/create-user" method="post" style="display: none;">
-        <input type="text" name="email" id="register-username-field" class="register-form-field" placeholder="E-mail">
-        <input type="password" name="password" id="register-password-field" class="register-form-field" placeholder="Password">
-        <input type="submit" value="Register" id="register-form-submit">
-        <div class="space_lg">&nbsp;</div>
-        <div class="space_lg">&nbsp;</div>
-        <button type="button" id="switch-to-login">Have an account? Sign In</button>
-    </form>
+    <button id="auth-btn" onclick="location.href='https://kpi.eu.auth0.com/authorize?audience=https%3A%2F%2Fkpi.eu.auth0.com%2Fapi%2Fv2%2F&scope=read:current_user%20offline_access%20openid%20profile&response_type=code&client_id=JIvCO5c2IBHlAe2patn6l6q5H35qxti0&redirect_uri=http%3A%2F%2Flocalhost%3A3000';">Login via Auth0</button>
 </main>
 
 <style>
@@ -91,34 +74,8 @@
         display: block;
     }
 
-    #login-form,
-    #register-form {
-        align-self: flex-start;
-        display: grid;
-        justify-items: center;
-        align-items: center;
-    }
-
-    .login-form-field::placeholder,
-    .register-form-field::placeholder {
-        color: #3a3a3a;
-    }
-
-    .login-form-field,
-    .register-form-field {
-        border: none;
-        border-bottom: 1px solid #3a3a3a;
-        margin-bottom: 10px;
-        border-radius: 3px;
-        outline: none;
-        padding: 0px 0px 5px 5px;
-    }
-
-    #login-form-submit,
-    #register-form-submit,
-    #switch-to-login,
-    #switch-to-register {
-        width: 100%;
+    #auth-btn {
+        width: min(15rem, 80%);
         padding: 7px;
         border: none;
         border-radius: 5px;
@@ -146,12 +103,13 @@
             }
         }).then((response) => {
             const { username } = response.data;
-
+            console.log(response.data);
             if (username) {
                 const mainHolder = document.getElementById("main-holder");
                 const loginHeader = document.getElementById("login-header");
+                const loginButton = document.getElementById("auth-btn");
 
-                loginForm.remove();
+                loginButton.remove();
                 loginErrorMsg.remove();
                 loginHeader.remove();
 
@@ -161,11 +119,27 @@
         });
     }
 
-    const loginButton = document.getElementById("login-form-submit");
+    const urlParams = new URLSearchParams(window.location.search);
+    if(urlParams.has('code')) {
+        const code = urlParams.get('code');
+
+        axios({
+            method: 'post',
+            url: '/api/login',
+            data: {
+                code
+            }
+        }).then((response) => {
+            const { username } = response.data;
+            sessionStorage.setItem('session', JSON.stringify(response.data));
+            window.location.href = window.location.origin + window.location.pathname;
+        }).catch((response) => {
+            loginErrorMsg.style.opacity = 1;
+        });
+    }
+
     const loginErrorMsg = document.getElementById("login-error-msg");
-    const registerButton = document.getElementById("register-form-submit");
     const logoutLink = document.getElementById("logout");
-    const switchToLoginLink = document.getElementById("switch-to-login");
 
     logoutLink.addEventListener("click", (e) => {
         e.preventDefault();
@@ -173,75 +147,7 @@
         location.reload();
     });
 
-    loginButton.addEventListener("click", (e) => {
-        e.preventDefault();
-        const username = loginForm.login.value;
-        const password = loginForm.password.value;
-
-
-        axios({
-            method: 'post',
-            url: '/api/login',
-            data: {
-                username,
-                password
-            }
-        }).then((response) => {
-            const { username } = response.data;
-            sessionStorage.setItem('session', JSON.stringify(response.data));
-            location.reload();
-        }).catch((response) => {
-            loginErrorMsg.style.opacity = 1;
-        });
-    })
-
-    registerButton.addEventListener("click", (e) => {
-        e.preventDefault();
-        const email = registerForm.email.value;
-        const password = registerForm.password.value;
-
-
-        axios({
-            method: 'post',
-            url: '/api/create-user',
-            data: {
-                email,
-                password
-            }
-        }).then((response) => {
-            registerForm.reset();
-            switchToLoginLink.click();
-            loginErrorMsg.style.opacity = 1;
-            loginErrorMsg.textContent = "Registration successful. Please log in.";
-        }).catch((response) => {
-            console.log(response)
-            loginErrorMsg.style.opacity = 1;
-            loginErrorMsg.textContent = response.response.data;
-        });
-    })
-
-    const switchToRegisterBtn = document.getElementById('switch-to-register');
-    const switchToLoginBtn = document.getElementById('switch-to-login');
     const loginHeader = document.getElementById('login-header');
-    const registerHeader = document.getElementById('register-header');
-    const loginForm = document.getElementById('login-form');
-    const registerForm = document.getElementById('register-form');
-
-    switchToRegisterBtn.addEventListener('click', () => {
-        loginForm.style.display = 'none';
-        loginHeader.style.display = 'none';
-        registerForm.style.display = 'grid';
-        registerHeader.style.display = 'block';
-        loginErrorMsg.style.opacity = 0;
-    });
-
-    switchToLoginBtn.addEventListener('click', () => {
-        registerForm.style.display = 'none';
-        registerHeader.style.display = 'none';
-        loginForm.style.display = 'grid';
-        loginHeader.style.display = 'block';
-        loginErrorMsg.style.opacity = 0;
-    });
 
     const checkToken = () => {
         const session = sessionStorage.getItem('session');
