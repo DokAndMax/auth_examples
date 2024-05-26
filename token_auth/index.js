@@ -1,27 +1,29 @@
-const uuid = require('uuid');
 const express = require('express');
-const onFinished = require('on-finished');
 const bodyParser = require('body-parser');
-const path = require('path');
-const port = 3000;
+const request = require('request');
 const fs = require('fs');
+const path = require('path');
 
-const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
+const port = 3000;
 const SESSION_KEY = 'Authorization';
+const auth0Config = {
+    domain: 'kpi.eu.auth0.com',
+    clientId: 'JIvCO5c2IBHlAe2patn6l6q5H35qxti0',
+    clientSecret: 'ZRF8Op0tWM36p1_hxXTU-B0K_Gq_-eAVtlrQpY24CasYiDmcXBhNS6IJMNcz1EgB',
+    audience: 'https://kpi.eu.auth0.com/api/v2/',
+    usersAccessToken: null,
+};
+
+retrieveUsersAccessToken();
 
 class Session {
-    #sessions = {}
+    #sessions = {};
 
     constructor() {
         try {
             this.#sessions = fs.readFileSync('./sessions.json', 'utf8');
             this.#sessions = JSON.parse(this.#sessions.trim());
-
-            console.log(this.#sessions);
-        } catch(e) {
+        } catch (e) {
             this.#sessions = {};
         }
     }
@@ -30,10 +32,7 @@ class Session {
         fs.writeFileSync('./sessions.json', JSON.stringify(this.#sessions), 'utf-8');
     }
 
-    set(key, value) {
-        if (!value) {
-            value = {};
-        }
+    set(key, value = {}) {
         this.#sessions[key] = value;
         this.#storeSessions();
     }
@@ -42,96 +41,212 @@ class Session {
         return this.#sessions[key];
     }
 
-    init(res) {
-        const sessionId = uuid.v4();
-        this.set(sessionId);
-
-        return sessionId;
-    }
-
     destroy(req, res) {
-        const sessionId = req.sessionId;
-        delete this.#sessions[sessionId];
+        const accessToken = req.accessToken;
+        delete this.#sessions[accessToken];
         this.#storeSessions();
     }
 }
 
 const sessions = new Session();
 
-app.use((req, res, next) => {
-    let currentSession = {};
-    let sessionId = req.get(SESSION_KEY);
+const app = express();
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(checkAuthentication);
 
-    if (sessionId) {
-        currentSession = sessions.get(sessionId);
-        if (!currentSession) {
-            currentSession = {};
-            sessionId = sessions.init(res);
-        }
-    } else {
-        sessionId = sessions.init(res);
-    }
+app.get('/', rootController);
+app.get('/logout', logoutController);
+app.post('/api/login', loginController);
+app.post('/api/create-user', createUserController);
+app.post('/api/refresh-token', refreshTokenController);
 
-    req.session = currentSession;
-    req.sessionId = sessionId;
-
-    onFinished(req, () => {
-        const currentSession = req.session;
-        const sessionId = req.sessionId;
-        sessions.set(sessionId, currentSession);
-    });
-
-    next();
+app.listen(port, () => {
+    console.log(`Example app listening on port ${port}`);
 });
 
-app.get('/', (req, res) => {
+function checkAuthentication (req, res, next) {
+    const authHeader = req.get(SESSION_KEY);
+    const [scheme, accessToken] = authHeader ? authHeader.split(' ') : [];
+
+    req.session = {};
+
+    if (scheme?.toLowerCase() === 'bearer' && accessToken) {
+        const session = sessions.get(accessToken);
+        if (session) {
+            req.session = session;
+            req.accessToken = accessToken;
+        }
+    }
+
+    next();
+};
+
+function rootController(req, res) {
     if (req.session.username) {
         return res.json({
             username: req.session.username,
             logout: 'http://localhost:3000/logout'
-        })
+        });
     }
-    res.sendFile(path.join(__dirname+'/index.html'));
-})
+    res.sendFile(path.join(__dirname + '/index.html'));
+};
 
-app.get('/logout', (req, res) => {
+function logoutController (req, res){
     sessions.destroy(req, res);
     res.redirect('/');
-});
+};
 
-const users = [
-    {
-        login: 'Login',
-        password: 'Password',
-        username: 'Username',
-    },
-    {
-        login: 'Login1',
-        password: 'Password1',
-        username: 'Username1',
-    }
-]
+function loginController(req, res){
+    const { username, password } = req.body;
 
-app.post('/api/login', (req, res) => {
-    const { login, password } = req.body;
+    const data = {
+        grant_type: 'http://auth0.com/oauth/grant-type/password-realm',
+        username,
+        password,
+        audience: auth0Config.audience,
+        scope: 'offline_access',
+        client_id: auth0Config.clientId,
+        client_secret: auth0Config.clientSecret,
+        realm: 'Username-Password-Authentication'
+    };
 
-    const user = users.find((user) => {
-        if (user.login == login && user.password == password) {
-            return true;
+    const options = {
+        uri: `https://${auth0Config.domain}/oauth/token`,
+        method: 'POST',
+        headers: {
+            'content-type': 'application/x-www-form-urlencoded'
+        },
+        form: data
+    };
+
+    request(options, (error, response, body) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).send('Authentication failed');
         }
-        return false
+
+        const authResponse = JSON.parse(body);
+        if (!authResponse.access_token) {
+            return res.status(401).send('Authentication failed');
+        }
+
+        req.session.accessToken = authResponse.access_token;
+        req.session.refreshToken = authResponse.refresh_token;
+        req.session.username = username;
+
+        sessions.set(authResponse.access_token, req.session)
+
+        res.json({ accessToken: req.session.accessToken, refreshToken: req.session.refreshToken });
     });
+};
 
-    if (user) {
-        req.session.username = user.username;
-        req.session.login = user.login;
+function createUserController (req, res){
+    const { email, password } = req.body;
 
-        res.json({ token: req.sessionId });
+    const data = {
+        email,
+        password,
+        user_metadata: {},
+        blocked: false,
+        email_verified: false,
+        app_metadata: {},
+        picture: 'https://i.imgur.com/pM2DvuM.jpeg',
+        connection: 'Username-Password-Authentication'
+    };
+
+    const options = {
+        uri: `https://${auth0Config.domain}/api/v2/users`,
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${auth0Config.usersAccessToken}`
+        },
+        json: data
+    };
+
+    request(options, (error, response, body) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).send('User creation failed');
+        }
+
+        if (response.statusCode !== 201) {
+            return res.status(response.statusCode).send(body.message);
+        }
+
+        res.json({ message: 'User created successfully' });
+    });
+};
+
+function refreshTokenController(req, res){
+    const refreshToken = req.body.refreshToken;
+
+    if (!refreshToken) {
+        return res.status(401).send('Refresh token missing');
     }
 
-    res.status(401).send();
-});
+    const data = {
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: auth0Config.clientId,
+        client_secret: auth0Config.clientSecret,
+        audience: auth0Config.audience
+    };
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-})
+    const options = {
+        uri: `https://${auth0Config.domain}/oauth/token`,
+        method: 'POST',
+        headers: {
+            'content-type': 'application/x-www-form-urlencoded'
+        },
+        form: data
+    };
+
+    request(options, (error, response, body) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).send('Refresh token failed');
+        }
+
+        const authResponse = JSON.parse(body);
+        if (!authResponse.access_token) {
+            return res.status(401).send('Refresh token failed');
+        }
+
+        req.session.accessToken = authResponse.access_token;
+
+        res.json({ message: 'Token refreshed' });
+    });
+};
+
+function retrieveUsersAccessToken() {
+    const data = {
+        grant_type: 'client_credentials',
+        client_id: auth0Config.clientId,
+        client_secret: auth0Config.clientSecret,
+        audience: auth0Config.audience
+    };
+
+    const options = {
+        uri: `https://${auth0Config.domain}/oauth/token`,
+        method: 'POST',
+        headers: {
+            'content-type': 'application/x-www-form-urlencoded'
+        },
+        form: data
+    };
+
+    request(options, (error, response, body) => {
+        if (error) {
+            throw new Error(error);
+        }
+
+        const authResponse = JSON.parse(body);
+        if (!authResponse.access_token) {
+            throw new Error('Refresh token failed');
+        }
+
+        auth0Config.usersAccessToken = authResponse.access_token;
+    });
+}
