@@ -41,14 +41,14 @@ class Session {
         return this.#sessions[key];
     }
 
-    destroy(req, res) {
-        const accessToken = req.accessToken;
+    destroy(accessToken) {
         delete this.#sessions[accessToken];
         this.#storeSessions();
     }
 }
 
 const sessions = new Session();
+const refreshTokens = new Session();
 
 const app = express();
 app.use(bodyParser.json());
@@ -93,7 +93,7 @@ function rootController(req, res) {
 };
 
 function logoutController (req, res){
-    sessions.destroy(req, res);
+    sessions.destroy(req.accessToken);
     res.redirect('/');
 };
 
@@ -131,13 +131,13 @@ function loginController(req, res){
             return res.status(401).send('Authentication failed');
         }
 
-        req.session.accessToken = authResponse.access_token;
         req.session.refreshToken = authResponse.refresh_token;
         req.session.username = username;
 
-        sessions.set(authResponse.access_token, req.session)
+        sessions.set(authResponse.access_token, req.session);
+        refreshTokens.set(authResponse.refresh_token, authResponse.access_token);
 
-        res.json({ accessToken: req.session.accessToken, refreshToken: req.session.refreshToken });
+        res.json({ accessToken: authResponse.access_token, refreshToken: req.session.refreshToken });
     });
 };
 
@@ -214,9 +214,14 @@ function refreshTokenController(req, res){
             return res.status(401).send('Refresh token failed');
         }
 
-        req.session.accessToken = authResponse.access_token;
+        const oldAccessToken = refreshTokens.get(refreshToken);
+        const newAccessToken = authResponse.access_token;
+        const session = sessions.get(oldAccessToken);
+        sessions.destroy(oldAccessToken);
+        sessions.set(newAccessToken, session);
+        refreshTokens.set(refreshToken, newAccessToken);
 
-        res.json({ message: 'Token refreshed' });
+        res.json({ accessToken: newAccessToken, refreshToken: refreshToken });
     });
 };
 
