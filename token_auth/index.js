@@ -3,9 +3,9 @@ const bodyParser = require('body-parser');
 const request = require('request');
 const fs = require('fs');
 const path = require('path');
+const { auth, requiredScopes } = require('express-oauth2-jwt-bearer');
 
 const port = 3000;
-const SESSION_KEY = 'Authorization';
 const auth0Config = {
     domain: 'kpi.eu.auth0.com',
     clientId: 'JIvCO5c2IBHlAe2patn6l6q5H35qxti0',
@@ -13,6 +13,12 @@ const auth0Config = {
     audience: 'https://kpi.eu.auth0.com/api/v2/',
     usersAccessToken: null,
 };
+const checkJwt = auth({
+    audience: 'https://kpi.eu.auth0.com/api/v2/',
+    issuerBaseURL: `https://kpi.eu.auth0.com/`,
+});
+
+const checkScopes = requiredScopes('read:current_user');
 
 retrieveUsersAccessToken();
 
@@ -48,14 +54,13 @@ class Session {
 }
 
 const sessions = new Session();
-const refreshTokens = new Session();
 
 const app = express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(checkAuthentication);
 
 app.get('/', rootController);
+app.get('/dashboard', checkJwt, checkScopes, dashboardController);
 app.get('/logout', logoutController);
 app.post('/api/login', loginController);
 app.post('/api/create-user', createUserController);
@@ -65,35 +70,18 @@ app.listen(port, () => {
     console.log(`Example app listening on port ${port}`);
 });
 
-function checkAuthentication (req, res, next) {
-    const authHeader = req.get(SESSION_KEY);
-    const [scheme, accessToken] = authHeader ? authHeader.split(' ') : [];
-
-    req.session = {};
-
-    if (scheme?.toLowerCase() === 'bearer' && accessToken) {
-        const session = sessions.get(accessToken);
-        if (session) {
-            req.session = session;
-            req.accessToken = accessToken;
-        }
-    }
-
-    next();
-};
-
-function rootController(req, res) {
-    if (req.session.username) {
-        return res.json({
-            username: req.session.username,
-            logout: 'http://localhost:3000/logout'
-        });
-    }
+function rootController(req, res, next) {
     res.sendFile(path.join(__dirname + '/index.html'));
 };
 
+function dashboardController(req, res, next) {
+    return res.json({
+        username: sessions.get(req.auth.payload.sub),
+        logout: 'http://localhost:3000/logout'
+    });
+};
+
 function logoutController (req, res){
-    sessions.destroy(req.accessToken);
     res.redirect('/');
 };
 
@@ -131,13 +119,10 @@ function loginController(req, res){
             return res.status(401).send('Authentication failed');
         }
 
-        req.session.refreshToken = authResponse.refresh_token;
-        req.session.username = username;
+        const userid = parseJwtSub(authResponse.access_token);
+        sessions.set(userid, username);
 
-        sessions.set(authResponse.access_token, req.session);
-        refreshTokens.set(authResponse.refresh_token, authResponse.access_token);
-
-        res.json({ accessToken: authResponse.access_token, refreshToken: req.session.refreshToken });
+        res.json({ accessToken: authResponse.access_token, refreshToken: authResponse.refresh_token });
     });
 };
 
@@ -214,12 +199,7 @@ function refreshTokenController(req, res){
             return res.status(401).send('Refresh token failed');
         }
 
-        const oldAccessToken = refreshTokens.get(refreshToken);
         const newAccessToken = authResponse.access_token;
-        const session = sessions.get(oldAccessToken);
-        sessions.destroy(oldAccessToken);
-        sessions.set(newAccessToken, session);
-        refreshTokens.set(refreshToken, newAccessToken);
 
         res.json({ accessToken: newAccessToken, refreshToken: refreshToken });
     });
@@ -254,4 +234,22 @@ function retrieveUsersAccessToken() {
 
         auth0Config.usersAccessToken = authResponse.access_token;
     });
+}
+
+function parseJwtSub(token) {
+    if (!token) {
+        return null;
+    }
+
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+        return null;
+    }
+
+    const decodedPayload = JSON.parse(atob(parts[1]));
+    if (!decodedPayload.sub) {
+        return null;
+    }
+
+    return decodedPayload.sub;
 }

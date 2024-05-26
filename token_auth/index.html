@@ -140,7 +140,7 @@
     } catch(e) {}
 
     if (token) {
-        axios.get('/', {
+        axios.get('/dashboard', {
             headers: {
                 Authorization: `bearer ${token}`
             }
